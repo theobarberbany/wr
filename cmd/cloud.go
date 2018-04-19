@@ -161,186 +161,242 @@ ask your administrator for the appropriate --network_dns settings (or clouddns
 config option) to use; the DNS must be able to resolve the domain name from
 within OpenStack.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if providerName == "" {
-			die("--provider is required")
-		}
-		if osPrefix == "" {
-			die("--os is required")
-		}
-		if osUsername == "" {
-			die("--username is required")
-		}
+		if providerName == "kubernetes" {
+			//do kubernetes stuff
+			// var postCreation []byte
+			// if postCreationScript != "" {
+			// 	var err error
+			// 	postCreation, err = ioutil.ReadFile(postCreationScript)
+			// 	if err != nil {
+			// 		die("--script %s could not be read: %s", postCreationScript, err)
+			// 	}
+			// }
 
-		var postCreation []byte
-		if postCreationScript != "" {
-			var err error
-			postCreation, err = ioutil.ReadFile(postCreationScript)
-			if err != nil {
-				die("--script %s could not be read: %s", postCreationScript, err)
+			// first we need our working directory to exist
+			createWorkingDir()
+
+			// check to see if the manager is already running (regardless of the
+			// state of the pid file); we can't proxy if a manager is already up
+			jq := connect(1 * time.Second)
+			if jq != nil {
+				die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 			}
-		}
+			// for debug purposes, set up logging to STDERR
+			cloudLogger := log15.New()
+			logLevel := log15.LvlWarn
+			if cloudDebug {
+				logLevel = log15.LvlDebug
+			}
+			cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
-		// first we need our working directory to exist
-		createWorkingDir()
+			// get all necessary cloud resources in place
+			mp, err := strconv.Atoi(config.ManagerPort)
+			if err != nil {
+				die("bad manager_port [%s]: %s", config.ManagerPort, err)
+			}
+			wp, err := strconv.Atoi(config.ManagerWeb)
+			if err != nil {
+				die("bad manager_web [%s]: %s", config.ManagerWeb, err)
+			}
+			provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
+			if err != nil {
+				die("failed to connect to %s: %s", providerName, err)
+			}
+			info("please wait while %s resources are created and the manager deployed to the cluster...", providerName)
+			err = provider.Deploy(&cloud.DeployConfig{
+				RequiredPorts:  []int{mp, wp},
+				GatewayIP:      cloudGatewayIP,
+				CIDR:           cloudCIDR,
+				DNSNameServers: strings.Split(cloudDNS, ","),
+			})
+			if err != nil {
+				die("failed to create resources & deployment in %s: %s", providerName, err)
+			}
 
-		// check to see if the manager is already running (regardless of the
-		// state of the pid file); we can't proxy if a manager is already up
-		jq := connect(1 * time.Second)
-		if jq != nil {
-			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
-		}
+			//Forward ports back to machine
 
-		// we will spawn wr on the remote server we will create, which means we
-		// need to know the path to ourselves in case we're not in the user's
-		// $PATH
-		exe, err := osext.Executable()
-		if err != nil {
-			die("could not get the path to wr: %s", err)
-		}
+		} else {
+			if providerName == "" {
+				die("--provider is required")
+			}
+			if osPrefix == "" {
+				die("--os is required")
+			}
+			if osUsername == "" {
+				die("--username is required")
+			}
 
-		// for debug purposes, set up logging to STDERR
-		cloudLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if cloudDebug {
-			logLevel = log15.LvlDebug
-		}
-		cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+			var postCreation []byte
+			if postCreationScript != "" {
+				var err error
+				postCreation, err = ioutil.ReadFile(postCreationScript)
+				if err != nil {
+					die("--script %s could not be read: %s", postCreationScript, err)
+				}
+			}
 
-		// get all necessary cloud resources in place
-		mp, err := strconv.Atoi(config.ManagerPort)
-		if err != nil {
-			die("bad manager_port [%s]: %s", config.ManagerPort, err)
-		}
-		wp, err := strconv.Atoi(config.ManagerWeb)
-		if err != nil {
-			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
-		}
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
-		if err != nil {
-			die("failed to connect to %s: %s", providerName, err)
-		}
-		info("please wait while %s resources are created...", providerName)
-		err = provider.Deploy(&cloud.DeployConfig{
-			RequiredPorts:  []int{22, mp, wp},
-			GatewayIP:      cloudGatewayIP,
-			CIDR:           cloudCIDR,
-			DNSNameServers: strings.Split(cloudDNS, ","),
-		})
-		if err != nil {
-			die("failed to create resources in %s: %s", providerName, err)
-		}
+			// first we need our working directory to exist
+			createWorkingDir()
 
-		// get/spawn a "head node" server
-		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-		fmPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
-		fwPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
-		var server *cloud.Server
-		usingExistingServer := false
-		alreadyUp := false
-		servers := provider.Servers()
-		for _, thisServer := range servers {
-			if thisServer.Alive() {
-				usingExistingServer = true
-				server = thisServer
-				info("using existing %s server at %s", providerName, server.IP)
+			// check to see if the manager is already running (regardless of the
+			// state of the pid file); we can't proxy if a manager is already up
+			jq := connect(1 * time.Second)
+			if jq != nil {
+				die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
+			}
 
-				// see if this server is already running wr manager by trying
-				// to re-establish our port forwarding, which may have failed
-				// due to temporary networking issues
+			// we will spawn wr on the remote server we will create, which means we
+			// need to know the path to ourselves in case we're not in the user's
+			// $PATH
+			exe, err := osext.Executable()
+			if err != nil {
+				die("could not get the path to wr: %s", err)
+			}
+
+			// for debug purposes, set up logging to STDERR
+			cloudLogger := log15.New()
+			logLevel := log15.LvlWarn
+			if cloudDebug {
+				logLevel = log15.LvlDebug
+			}
+			cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
+			// get all necessary cloud resources in place
+			mp, err := strconv.Atoi(config.ManagerPort)
+			if err != nil {
+				die("bad manager_port [%s]: %s", config.ManagerPort, err)
+			}
+			wp, err := strconv.Atoi(config.ManagerWeb)
+			if err != nil {
+				die("bad manager_web [%s]: %s", config.ManagerWeb, err)
+			}
+			provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
+			if err != nil {
+				die("failed to connect to %s: %s", providerName, err)
+			}
+			info("please wait while %s resources are created...", providerName)
+			err = provider.Deploy(&cloud.DeployConfig{
+				RequiredPorts:  []int{22, mp, wp},
+				GatewayIP:      cloudGatewayIP,
+				CIDR:           cloudCIDR,
+				DNSNameServers: strings.Split(cloudDNS, ","),
+			})
+			if err != nil {
+				die("failed to create resources in %s: %s", providerName, err)
+			}
+
+			// get/spawn a "head node" server
+			keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
+			fmPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
+			fwPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
+			var server *cloud.Server
+			usingExistingServer := false
+			alreadyUp := false
+			servers := provider.Servers()
+			for _, thisServer := range servers {
+				if thisServer.Alive() {
+					usingExistingServer = true
+					server = thisServer
+					info("using existing %s server at %s", providerName, server.IP)
+
+					// see if this server is already running wr manager by trying
+					// to re-establish our port forwarding, which may have failed
+					// due to temporary networking issues
+					err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
+					if err != nil {
+						warn("could not reestablish port forwarding to server %s, port %s", server.IP, mp)
+					}
+					err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
+					if err != nil {
+						warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
+					}
+					jq = connect(2 * time.Second)
+					if jq != nil {
+						info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
+						alreadyUp = true
+					} else {
+						// clean up any existing or partially failed forwarding
+						pid, running := checkProcess(fmPidPath)
+						if running {
+							errk := killProcess(pid)
+							if errk != nil {
+								warn("failed to kill ssh forwarder pid %d", pid)
+							}
+						}
+						errr := os.Remove(fmPidPath)
+						if errr != nil && !os.IsNotExist(errr) {
+							warn("failed to remove forwarder pid file %s: %s", fmPidPath, errr)
+						}
+						pid, running = checkProcess(fwPidPath)
+						if running {
+							errk := killProcess(pid)
+							if errk != nil {
+								warn("failed to kill ssh forwarder pid %d", pid)
+							}
+						}
+						errr = os.Remove(fwPidPath)
+						if errr != nil && !os.IsNotExist(errr) {
+							warn("failed to remove forwarder pid file %s: %s", fwPidPath, errr)
+						}
+					}
+
+					break
+				}
+			}
+			if server == nil {
+				info("please wait while a server is spawned on %s...", providerName)
+				flavor, errf := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
+				if errf != nil {
+					teardown(provider)
+					die("failed to launch a server in %s: %s", providerName, errf)
+				}
+				server, errf = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
+				if errf != nil {
+					teardown(provider)
+					die("failed to launch a server in %s: %s", providerName, errf)
+				}
+				errf = server.WaitUntilReady(cloudConfigFiles, postCreation)
+				if errf != nil {
+					teardown(provider)
+					die("failed to launch a server in %s: %s", providerName, errf)
+				}
+			}
+
+			// ssh to the server, copy over our exe, and start running wr manager
+			// there
+			if !alreadyUp {
+				info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
+				bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
+
+				// rather than daemonize and use a go ssh forwarding library or
+				// implement myself using the net package, since I couldn't get them
+				// to work reliably and completely, we'll just spawn ssh -L in the
+				// background and keep note of the pids so we can kill them during
+				// teardown
 				err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, mp)
+					teardown(provider)
+					die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 				}
 				err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
-				}
-				jq = connect(2 * time.Second)
-				if jq != nil {
-					info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
-					alreadyUp = true
-				} else {
-					// clean up any existing or partially failed forwarding
-					pid, running := checkProcess(fmPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-					errr := os.Remove(fmPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fmPidPath, errr)
-					}
-					pid, running = checkProcess(fwPidPath)
-					if running {
-						errk := killProcess(pid)
-						if errk != nil {
-							warn("failed to kill ssh forwarder pid %d", pid)
-						}
-					}
-					errr = os.Remove(fwPidPath)
-					if errr != nil && !os.IsNotExist(errr) {
-						warn("failed to remove forwarder pid file %s: %s", fwPidPath, errr)
-					}
+					teardown(provider)
+					die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
 				}
 
-				break
+				// check that we can now connect to the remote manager
+				jq = connect(40 * time.Second)
+				if jq == nil {
+					teardown(provider)
+					die("could not talk to wr manager on server at %s after 40s", server.IP)
+				}
+
+				info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
 			}
+
+			info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
+			info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 		}
-		if server == nil {
-			info("please wait while a server is spawned on %s...", providerName)
-			flavor, errf := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
-			if errf != nil {
-				teardown(provider)
-				die("failed to launch a server in %s: %s", providerName, errf)
-			}
-			server, errf = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
-			if errf != nil {
-				teardown(provider)
-				die("failed to launch a server in %s: %s", providerName, errf)
-			}
-			errf = server.WaitUntilReady(cloudConfigFiles, postCreation)
-			if errf != nil {
-				teardown(provider)
-				die("failed to launch a server in %s: %s", providerName, errf)
-			}
-		}
-
-		// ssh to the server, copy over our exe, and start running wr manager
-		// there
-		if !alreadyUp {
-			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
-
-			// rather than daemonize and use a go ssh forwarding library or
-			// implement myself using the net package, since I couldn't get them
-			// to work reliably and completely, we'll just spawn ssh -L in the
-			// background and keep note of the pids so we can kill them during
-			// teardown
-			err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
-			if err != nil {
-				teardown(provider)
-				die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
-			}
-			err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
-			if err != nil {
-				teardown(provider)
-				die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
-			}
-
-			// check that we can now connect to the remote manager
-			jq = connect(40 * time.Second)
-			if jq == nil {
-				teardown(provider)
-				die("could not talk to wr manager on server at %s after 40s", server.IP)
-			}
-
-			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
-		}
-
-		info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
-		info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 	},
 }
 
