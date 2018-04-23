@@ -63,6 +63,10 @@ import:
 - package: github.com/fatih/color
   version: ^1.6.0
 - package: github.com/hashicorp/go-multierror
+- package: k8s.io/api
+- package: k8s.io/client-go
+  version: ~7.0.0
+- package: k8s.io/apimachinery
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master
