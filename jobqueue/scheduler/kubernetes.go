@@ -288,7 +288,7 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	var disk *resource.Quantity
 	if s.config.Debug {
 		cores = resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI)
-		ram = resource.NewQuantity(int64(req.RAM)*1024, resource.BinarySI)
+		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
 		disk = resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI)
 	} else {
 		cores = resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)

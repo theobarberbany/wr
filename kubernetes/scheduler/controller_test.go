@@ -112,7 +112,8 @@ func init() {
 }
 
 // This test tests that the nodes are correctly being reported,
-// and that Resource requests are being handled correctly
+// and that Resource requests are being handled correctly.TestReqCheck
+// In the testing environment (Travis CI the VM has 2 vcpus and ~7gb ram)
 func TestReqCheck(t *testing.T) {
 	// Resources are limited in CI.
 	passCases := []struct {
