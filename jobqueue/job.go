@@ -34,8 +34,8 @@ import (
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-multierror"
-	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
 )
 
@@ -126,6 +126,10 @@ type Job struct {
 	// on Override) based on past experience of running jobs with the same
 	// ReqGroup.
 	Requirements *scheduler.Requirements
+
+	// RequirementsOrig is like Requirements, but only has the original RAM,
+	// Disk and time values set by you, if any.
+	RequirementsOrig *scheduler.Requirements
 
 	// Override determines if your own supplied Requirements get used, or if the
 	// systems' calculated values get used. 0 means prefer the system values. 1

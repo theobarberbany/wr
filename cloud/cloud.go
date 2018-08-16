@@ -84,8 +84,9 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
-	"github.com/satori/go.uuid"
+	"golang.org/x/crypto/ssh"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -579,7 +580,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // complete before this function returns; empty slice means do nothing.
 func (s *Server) WaitUntilReady(files string, postCreationScript []byte) error {
 	// wait for ssh to come up
-	_, err := s.SSHClient()
+	_, _, err := s.SSHClient()
 	if err != nil {
 		return err
 	}
@@ -651,8 +652,15 @@ SENTINEL:
 		s.Script = postCreationScript
 
 		// because the postCreationScript may have altered PATH and other things
-		// that subsequent RunCmd may rely on, clear the client
-		s.sshclient = nil
+		// that subsequent RunCmd may rely on, clear the clients
+		for _, client := range s.sshClients {
+			err = client.Close()
+			if err != nil {
+				s.logger.Warn("failed to close client ssh connection", "err", err)
+			}
+		}
+		s.sshClients = []*ssh.Client{}
+		s.sshClientState = []bool{}
 	}
 
 	return nil

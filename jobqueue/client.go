@@ -42,11 +42,11 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tlstcp"
-	"github.com/satori/go.uuid"
+	"github.com/gofrs/uuid"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
+	"nanomsg.org/go-mangos/protocol/req"
+	"nanomsg.org/go-mangos/transport/tlstcp"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
@@ -412,7 +412,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
-	if !uuid.Equal(c.clientid, job.ReservedBy) {
+	if c.clientid != job.ReservedBy {
 		return Error{"Execute", job.Key(), ErrMustReserve}
 	}
 

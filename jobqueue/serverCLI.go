@@ -28,9 +28,8 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/go-mangos/mangos"
-	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
 )
 
 // handleRequest parses the bytes received from a connected client in to a
@@ -640,7 +639,7 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 	}
 	job := item.Data.(*Job)
 
-	if !uuid.Equal(cr.ClientID, job.ReservedBy) {
+	if cr.ClientID != job.ReservedBy {
 		return item, job, ErrMustReserve
 	}
 
