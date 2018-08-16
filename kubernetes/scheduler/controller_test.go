@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -25,9 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubescheduler "github.com/VertebrateResequencing/wr/kubernetes/scheduler"
@@ -37,10 +34,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 var lc *client.Kubernetesp
 var autherr error
+var nsErr error
 var testingNamespace string
 var callBackChan chan string
 var badCallBackChan chan *cloud.Server
@@ -48,24 +48,39 @@ var reqChan chan *kubescheduler.Request
 var podAliveChan chan *kubescheduler.PodAlive
 var clientset kubernetes.Interface
 var restConfig *rest.Config
+var skip bool
 
 func init() {
-
 	lc = &client.Kubernetesp{}
 
-	clientset, restConfig, autherr = lc.Authenticate()
+	clientset, restConfig, autherr = lc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = lc.CreateNewNamespace(testingNamespace)
+	nsErr = lc.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = lc.Initialize(clientset, testingNamespace)
 	if autherr != nil {
-		panic(autherr)
+		fmt.Printf("Failed initialise clients: %s", autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+		return
 	}
 
 	// Set up message notifier & request channels
@@ -74,8 +89,8 @@ func init() {
 	reqChan = make(chan *kubescheduler.Request)
 	podAliveChan = make(chan *kubescheduler.PodAlive)
 
-	// Initialise the informer factory
-	// Confine all informers to the provided namespace
+	// Initialise the informer factory Confine all informers to the provided
+	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(clientset, time.Second*15, testingNamespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
 	})
@@ -103,7 +118,8 @@ func init() {
 
 	go kubeInformerFactory.Start(stopCh)
 
-	// Start the scheduling controller
+	// Start the scheduling controller. Keep this panic, if we've got this far
+	// then we should not be failing.
 	go func() {
 		if err := controller.Run(2, stopCh); err != nil {
 			panic(fmt.Errorf("Controller failed: %s", err))
@@ -111,10 +127,13 @@ func init() {
 	}()
 }
 
-// This test tests that the nodes are correctly being reported,
-// and that Resource requests are being handled correctly.TestReqCheck
-// In the testing environment (Travis CI the VM has 2 vcpus and ~7gb ram)
+// This test tests that the nodes are correctly being reported, and that
+// Resource requests are being handled correctly. This test is specific to the
+// testing environment (Travis CI the VM has 2 vcpus and ~7gb ram).
 func TestReqCheck(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	// Resources are limited in CI.
 	passCases := []struct {
@@ -220,9 +239,11 @@ func TestReqCheck(t *testing.T) {
 	}
 }
 
-// This test is really to test reporting of why
-// something might've blown up.
+// This test is really to test reporting of why something might've blown up.
 func TestRunCmd(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	passCases := []struct {
 		resourceReq   apiv1.ResourceRequirements
@@ -282,8 +303,8 @@ func TestRunCmd(t *testing.T) {
 		}
 
 	}
-	// This fail case emulates a configmap (cloud script)
-	// failing. (call /bin/false)
+	// This fail case emulates a configmap (cloud script) failing. (call
+	// /bin/false)
 	failCases := []struct {
 		resourceReq   apiv1.ResourceRequirements
 		configMapData string

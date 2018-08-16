@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -42,9 +42,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// Assumes that there is a wr deployment in existence
-// in development mode. It then pulls the namespace from the
-// resource file and runs the tests against the cluster there.
+// Assumes that there is a wr deployment in existence in development mode. It
+// then pulls the namespace from the resource file and runs the tests against
+// the cluster there.
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
@@ -53,14 +53,23 @@ var config internal.Config
 var logger log15.Logger
 var token []byte
 var jq *jobqueue.Client
+var skip bool
 
 func init() {
 	logger = log15.New()
 
 	tc = client.Kubernetesp{}
-	clientset, _, autherr = tc.Authenticate()
+	clientset, _, autherr = tc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := clientset.CoreV1().Endpoints("default").List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for default namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+		return
 	}
 
 	config = internal.ConfigLoad(internal.Development, false, logger)
@@ -69,7 +78,9 @@ func init() {
 
 	file, err := os.Open(resourcePath)
 	if err != nil {
-		panic(err)
+		fmt.Printf("No resource file found at %s, skipping tests.", resourcePath)
+		skip = true
+		return
 	}
 
 	decoder := gob.NewDecoder(file)
@@ -85,16 +96,22 @@ func init() {
 
 	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile, config.ManagerCertDomain, token, 15*time.Second)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to connect to jobqueue, skipping.")
+		skip = true
+		return
 	}
 
 	autherr = tc.Initialize(clientset, resources.Details["namespace"])
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 }
 
 func TestEchoes(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd string
@@ -113,13 +130,12 @@ func TestEchoes(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -127,22 +143,14 @@ func TestEchoes(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				t.Errorf("cmd %s failed", c.cmd)
-				return false, fmt.Errorf("cmd failed")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion.
-		// They are kept if they error.
+		// Now check the pods are deleted after succesful completion. They are
+		// kept if they error.
 		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
@@ -150,12 +158,11 @@ func TestEchoes(t *testing.T) {
 			t.Errorf("Pod %s was not deleted: %s", job.Host, err)
 		}
 	}
-
 }
-
-// Go's byte -> str conversion causes the md5 to differ from
-// the one on the OVH website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd string
@@ -165,13 +172,12 @@ func TestFileCreation(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -179,25 +185,14 @@ func TestFileCreation(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				stdErr, err := job.StdErr()
-				if err != nil {
-					t.Errorf("Job failed, and failed to get stderr")
-				}
-				t.Errorf("cmd %s failed: %s", c.cmd, stdErr)
-				return false, fmt.Errorf("cmd failed (timeout?)")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now we get the host, and exec to gain the md5 of the file. (Verification step
+		// Now we get the host, and copy the file to memory. Then calculate the
+		// md5 of the file. (Verification step)
 		stdout, _, err := tc.ExecInPod(job.Host, "wr-runner", tc.NewNamespaceName, []string{"cat", "/tmp/hw"})
 		if err != nil {
 			t.Errorf("Failed to get file from container: %s", err)
@@ -211,8 +206,8 @@ func TestFileCreation(t *testing.T) {
 			t.Errorf("MD5 do not match expected : %s, got: %s", expectedMd5, md5)
 		}
 
-		// Clean up manually. This is because we have a limited number of cores in CI, and everything
-		// will time out if we don't.
+		// Clean up manually. This is because we have a limited number of cores
+		// in CI, and everything will time out if we don't.
 		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
@@ -223,6 +218,9 @@ func TestFileCreation(t *testing.T) {
 }
 
 func TestContainerImage(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd            string
@@ -238,13 +236,12 @@ func TestContainerImage(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -252,22 +249,14 @@ func TestContainerImage(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				t.Errorf("cmd '%s' failed", c.cmd)
-				return false, fmt.Errorf("cmd failed")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now the job has completed succesfully we heck that the image used is
+		// Now the job has completed succesfully we check that the image used is
 		// as expected
 		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil {
@@ -282,6 +271,7 @@ func TestContainerImage(t *testing.T) {
 		for _, container := range pod.Spec.Containers {
 			if container.Name == "wr-runner" {
 				runnercontainer = &container
+				continue
 			}
 		}
 
@@ -293,8 +283,8 @@ func TestContainerImage(t *testing.T) {
 			t.Errorf("Unexpected container image for runner %s, expected %s got %s", pod.ObjectMeta.Name, c.containerImage, runnercontainer.Image)
 		}
 
-		// Clean up manually. This is because we have a limited number of cores in CI, and everything
-		// will time out if we don't.
+		// Clean up manually. This is because we have a limited number of cores
+		// in CI, and everything will time out if we don't.
 		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
@@ -302,4 +292,21 @@ func TestContainerImage(t *testing.T) {
 
 	}
 
+}
+
+// checkJob checks if the passed job has exited 0. If it has not it gets the
+// STDERR of the job and returns it.
+func checkJob(job *jobqueue.Job) (bool, error) {
+	if job.Exited && job.Exitcode != 1 {
+		return true, nil
+	}
+	if job.Exited && job.Exitcode == 1 {
+		stdErr, err := job.StdErr()
+		if err != nil {
+			return false, fmt.Errorf("Job failed, and failed to get stderr")
+		}
+
+		return false, fmt.Errorf("cmd cmd %s failed: %s", job.Cmd, stdErr)
+	}
+	return false, nil
 }

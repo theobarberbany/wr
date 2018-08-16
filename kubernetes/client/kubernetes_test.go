@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,44 +22,58 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/kubernetes"
-
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/docker/docker/pkg/namesgenerator"
+	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 )
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
 var autherr error
+var nsErr error
 var testingNamespace string
+var skip bool
 
 func init() {
 	tc = client.Kubernetesp{}
-	clientset, _, autherr = tc.Authenticate()
+	clientset, _, autherr = tc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = tc.CreateNewNamespace(testingNamespace)
+	nsErr = tc.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = tc.Initialize(clientset, testingNamespace)
+
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
 	}
 }
 
 func TestCreateNewNamespace(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		namespaceName string
 	}{
@@ -86,6 +100,9 @@ func TestCreateNewNamespace(t *testing.T) {
 
 // Test that the Deploy() call returns without error.
 func TestDeploy(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -105,8 +122,8 @@ func TestDeploy(t *testing.T) {
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone)
-		// We won't delete this now so we can use it later.
+		// Test the creation of config maps (2 birds one stone) We won't delete
+		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
 			t.Error(err.Error())
@@ -119,9 +136,8 @@ func TestDeploy(t *testing.T) {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
 		}
 
-		// Create the deployment
-		// we run the init script created from wherever we've
-		// decided to mount it.
+		// Create the deployment we run the init script created from wherever
+		// we've decided to mount it.
 		err = tc.Deploy(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
 			c.cmdArgs, configmap.ObjectMeta.Name,
@@ -129,12 +145,13 @@ func TestDeploy(t *testing.T) {
 		if err != nil {
 			t.Error(err.Error())
 		}
-
 	}
-
 }
 
 func TestSpawn(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -164,8 +181,8 @@ func TestSpawn(t *testing.T) {
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone)
-		// We won't delete this now so we can use it later.
+		// Test the creation of config maps (2 birds one stone) We won't delete
+		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
 			t.Error(err.Error())
@@ -178,9 +195,8 @@ func TestSpawn(t *testing.T) {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
 		}
 
-		// create spawn request
-		// we run the init script created from wherever we've
-		// decided to mount it.
+		// create spawn request we run the init script created from wherever
+		// we've decided to mount it.
 
 		pod, err := tc.Spawn(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
@@ -217,30 +233,46 @@ func TestSpawn(t *testing.T) {
 }
 
 func TestInWrPod(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	// These tests are not run inside a wr pod. Expect false
 	inwr := client.InWRPod()
 	if inwr {
-		t.Error("This test is not run inside a pod WR controlls, should return false.")
+		t.Error("This test is not run inside a pod wr controlls, should return false.")
 	}
 }
 
 func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		fileData string
 		filePath string
 	}{
 		{
 			fileData: "echo \"hello world\"",
-			filePath: "/tmp/d1",
+			filePath: "/d1",
 		},
 	}
 
+	dir, err := ioutil.TempDir("", "configMapFromFileTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer os.RemoveAll(dir) // clean up
+
 	for _, c := range cases {
-		err := ioutil.WriteFile(c.filePath, []byte(c.fileData), 0644)
+		err := ioutil.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)
 		if err != nil {
-			t.Error(fmt.Errorf("Failed to write file to %s: %s", c.filePath, err))
+			t.Error(fmt.Errorf("Failed to write file to %s: %s", dir+c.filePath, err))
 		}
-		cmap, err := tc.CreateInitScriptConfigMapFromFile(c.filePath)
+		cmap, err := tc.CreateInitScriptConfigMapFromFile(dir + c.filePath)
+		if err != nil {
+			t.Errorf("Failed to create config map: %s", err)
+		}
 
 		expectedData := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"" +
 			"\necho \"hello world\"\necho \"Init Script complete, executing arguments provided\"\nexec $@"
@@ -248,13 +280,14 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 		if cmap.Data[client.DefaultScriptName] != expectedData {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", cmap.Data[client.DefaultScriptName], expectedData))
 		}
-
 	}
-
 }
 
 // Must be called after deploy()
 func TestTearDown(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		namespaceName string
 	}{
@@ -271,6 +304,5 @@ func TestTearDown(t *testing.T) {
 		if err == nil {
 			t.Error("TearDown should fail if called twice with the same input.")
 		}
-
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -18,64 +18,43 @@
 
 package client
 
-// This file contains the code for the Pod struct.
-
 import (
-	"strings"
-
-	"k8s.io/apimachinery/pkg/api/resource"
-
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
-
 	"archive/tar"
-	"net/url"
-	//"errors"
-
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 
-	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // Allow GCP Auth
+	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
-	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	"k8s.io/client-go/transport/spdy"
 )
 
-// Pod contains some basic identifying information
-// about a pod
-type Pod struct {
-	ID        string
-	Name      string
-	Resources *ResourceRequest
-	logger    log15.Logger
-}
-
-// ResourceRequest specifies a
-// request for resources. Used in Spawn()
+// ResourceRequest specifies a request for resources. Used in Spawn().
 type ResourceRequest struct {
 	Cores *resource.Quantity
 	Disk  *resource.Quantity
 	RAM   *resource.Quantity
 }
 
-// CmdOptions contains StreamOptions for use in AttachCmd()
-// or ExecCmd(). The first item in the command slice must be
-// the command to execute only, any following will be arguments.
+// CmdOptions contains StreamOptions for use in AttachCmd() or ExecCmd(). The
+// first item in the command slice must be the command to execute only, any
+// following will be arguments.
 type CmdOptions struct {
 	StreamOptions
-
 	Command []string
 }
 
-// StreamOptions specifies all resources
-// needed to attach / run a command in a pod,
-// and stream in StdIn / return StdOut & StdErr.
+// StreamOptions specifies all resources needed to attach / run a command in a
+// pod, and stream in StdIn / return StdOut & StdErr.
 type StreamOptions struct {
 	PodName       string
 	ContainerName string
@@ -84,18 +63,17 @@ type StreamOptions struct {
 	Err           io.Writer
 }
 
-// FilePair is a source, destination
-// pair of file paths
+// FilePair is a source, destination pair of file paths.
 type FilePair struct {
 	Src, Dest string
 }
 
-// Writer provides a method for writing output (from stderr)
+// Writer provides a method for writing output (from stderr).
 type Writer struct {
 	Str []string
 }
 
-// Write writes output (from stderr)
+// Write writes output (from stderr).
 func (w *Writer) Write(p []byte) (n int, err error) {
 	str := string(p)
 	if len(str) > 0 {
@@ -104,14 +82,15 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	return len(str), nil
 }
 
-// Adds file to tar.Writer
+// Adds file to tar.Writer.
 func addFile(tw *tar.Writer, fpath string, dest string) error {
 	file, err := os.Open(fpath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	if stat, err := file.Stat(); err == nil {
+	stat, err := file.Stat()
+	if err == nil {
 		// now lets create the header as needed for this file within the tarball
 		header := new(tar.Header)
 		header.Name = dest + path.Base(fpath)
@@ -127,33 +106,30 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 			return err
 		}
 	}
-	return nil
+	return err
 }
 
-// Writes tarball to an io.writer
-// Takes a slice of FilePair(s), format source, destination
+// Writes tarball to an io.writer Takes a slice of FilePair(s), format source,
+// destination.
 func makeTar(files []FilePair, writer io.Writer) error {
 	//Set up tar writer
 	tarWriter := tar.NewWriter(writer)
 	defer tarWriter.Close()
 	// Add each file to the tarball
-	fmt.Println(len(files))
 	for i := range files {
-		fmt.Printf("Adding file %v \n", files[i])
 		if err := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); err != nil {
 			return err
 		}
 	}
-	fmt.Println("Done adding files to tar")
 	return nil
 }
 
-// AttachCmd attaches to a running container, pipes StdIn to the command running on that container
-// if StdIn is supplied.
-// Should work after only calling Authenticate()
+// AttachCmd attaches to a running container and pipes StdIn to the command
+// running on that container if StdIn is supplied. Should work after only
+// calling Authenticate().
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
-	// Make a request to the APIServer for an 'attach'.
-	// Open Stdin and Stderr for use by the client
+	// Make a request to the APIServer for an 'attach' action. Open Stdin and
+	// Stderr for use by the client.
 	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(opts.PodName).
@@ -167,14 +143,14 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		TTY:       false,
 	}, scheme.ParameterCodec)
 
-	// Create an executor to send commands / receive output.
-	// SPDY Allows multiplexed bidirectional streams to and from  the pod
+	// Create an executor to send commands / receive output. SPDY Allows
+	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		panic(fmt.Errorf("Error creating SPDYExecutor: %v", err))
+		return "", "", fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
 	}
-	// Execute the command, with Std(in,out,err) pointing to the
-	// above readers and writers
+	// Execute the command, with Std(in,out,err) pointing to the above readers
+	// and writers
 	err = exec.Stream(remotecommand.StreamOptions{
 		Stdin:  opts.In,
 		Stdout: opts.Out,
@@ -182,15 +158,15 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		Tty:    false,
 	})
 	if err != nil {
-		fmt.Printf("StdErr: %v\n", opts.Err)
-		panic(fmt.Errorf("Error executing remote command: %v", err))
+		p.Error("AttachCmd returned error", "error", opts.Err)
+		return "", "", fmt.Errorf("Error executing remote command: %v", err)
 	}
 	return "", "", nil
 }
 
-// ExecCmd executes the provided command inside a running container, if StdIn is supplied
-// pipes StdIn to the command.
-// Should work after only calling Authenticate()
+// ExecCmd executes the provided command inside a running container, if StdIn is
+// supplied pipes StdIn to the command. Should work after only calling
+// Authenticate().
 func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdErr string, err error) {
 	// Make Request to APISever to 'exec' a command
 	execRequest := p.RESTClient.Post().
@@ -207,14 +183,14 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 		Stderr:    true,
 		TTY:       false,
 	}, scheme.ParameterCodec)
-	// Create an executor to send commands / receive output.
-	// SPDY Allows multiplexed bidirectional streams to and from  the pod
+	// Create an executor to send commands / receive output. SPDY Allows
+	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
 		return "", "", fmt.Errorf("Error creating SPDYExecutor: %v", err)
 	}
-	// Execute the command, with Std(in,out,err) pointing to the
-	// above readers and writers
+	// Execute the command, with Std(in,out,err) pointing to the above readers
+	// and writers
 	err = exec.Stream(remotecommand.StreamOptions{
 		Stdin:  opts.In,
 		Stdout: opts.Out,
@@ -227,10 +203,12 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 	return "", "", nil
 }
 
-// ExecInPod is a convenience function to call ExecCmd without needing to set up writers for stdOut/Err
-// Accepts a pod name, container name, namespace and command. If you want to pass StdIn have a need for a
-//reader / writer then you'll need to use ExecCmd. If the command executes in the container and stdErr is
-// not nil, the command will return an error containing the contents of stdErr
+// ExecInPod is a convenience function to call ExecCmd without needing to set up
+// writers for stdOut/Err. Accepts a pod name, container name, namespace and
+// command. If you want to pass StdIn or have a need for a reader / writer then
+// you'll need to use ExecCmd. If the command executes in the container and
+// stdErr is not nil, the command will return an error containing the contents
+// of stdErr.
 func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string, command []string) (string, string, error) {
 	stdOut := new(Writer)
 	stdErr := new(Writer)
@@ -244,9 +222,7 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 		},
 	}
 
-	// Exec the command in the pod
-
-	// If the exec call failed, return the error
+	// Exec the command in the pod. If the exec call failed, return the error
 	_, _, err := p.ExecCmd(opts, namespace)
 	if err != nil {
 		return "", "", err
@@ -254,17 +230,17 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 
 	// If the exec call succeded, but the cmd failed, also error
 	if len(stdErr.Str) != 0 {
-		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command returned non zero: %s", stdErr.Str)
+		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command produced STDERR: %s", stdErr.Str)
 	}
 
 	return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), nil
-
 }
 
-// PortForward sets up port forwarding to the manager that is running inside the cluster
+// PortForward sets up port forwarding to the manager that is running inside the
+// cluster.
 func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	if pod.Status.Phase != apiv1.PodRunning {
-		p.Logger.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", pod.ObjectMeta.Name)
+		p.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", pod.ObjectMeta.Name)
 		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
 	}
 
@@ -279,15 +255,11 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	for i, port := range requiredPorts {
 		ports[i] = strconv.Itoa(port)
 	}
-	fmt.Println(ports)
-	fmt.Println("returning at end of portForward")
 
 	return p.forwardPorts("POST", req.URL(), ports)
-
 }
 
 func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
-	fmt.Println("In ForwardPorts")
 	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
 	if err != nil {
 		return err
@@ -301,10 +273,10 @@ func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 	return fw.ForwardPorts()
 }
 
-// CopyTar copies the files defined in each filePair in files to the pod provided.
-// Called by controller when initContainer status is running.
+// CopyTar copies the files defined in each filePair in files to the pod
+// provided. Called by controller when initContainer status is running.
 func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
-	p.Logger.Info(fmt.Sprintf("copyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
+	p.Debug("copyTar Called", "files", files, "pod", pod.ObjectMeta.Name)
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
 
@@ -313,13 +285,18 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		defer pipeWriter.Close()
 		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
-			p.Logger.Error("error writing tar", "err", tarErr)
+			p.Error("error writing tar", "err", tarErr)
 			err = tarErr
 		}
 	}()
 	if err != nil {
 		return err
 	}
+
+	/* This needs to be in a goroutine as io.Pipe() blocks until each write has
+	been read. If I wait, p.AttachCmd(opts) will never get executed, and I've
+	got a deadlock. I could try reversing it, calling AttachCmd (that will also
+	block) in a goroutine, and then this normally? */
 
 	stdOut := new(Writer)
 	stdErr := new(Writer)
@@ -336,17 +313,16 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 
 	_, _, err = p.AttachCmd(opts)
 	if err != nil {
-		p.Logger.Error("error running AttachCmd for CopyTar", "err", err)
+		p.Error("error running AttachCmd for CopyTar", "err", err)
 	}
 
-	p.Logger.Debug(fmt.Sprintf("contents of stdOut: %v\n", stdOut.Str))
-	p.Logger.Debug(fmt.Sprintf("contents of stdErr: %v\n", stdErr.Str))
+	p.Debug("contents of stdOut", stdOut.Str)
+	p.Debug("contents of stdErr", stdErr.Str)
 	return err
-
 }
 
-// GetLog Gets the logs from a container with the name 'wr-runner'
-// Returns the last n lines.
+// GetLog Gets the logs from a container with the name 'wr-runner' Returns the
+// last n lines.
 func (p *Kubernetesp) GetLog(pod *apiv1.Pod, lines int) (string, error) {
 	req := p.RESTClient.Get().
 		Namespace(p.NewNamespaceName).

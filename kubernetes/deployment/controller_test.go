@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -21,6 +21,7 @@ package deployment_test
 import (
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
@@ -34,39 +35,57 @@ import (
 	kubedeployment "github.com/VertebrateResequencing/wr/kubernetes/deployment"
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/inconshreveable/log15"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var dc kubedeployment.Controller
 var autherr error
+var nsErr error
 var testingNamespace string
+var skip bool
+var dir string
 
 // Just test that the call to Deploy() works, and that when configured as
 // expected, the deployment controller will copy the tarball, and that the
 // manager can be connected to.
 
 func init() {
-
 	dc = kubedeployment.Controller{
 		Client: &client.Kubernetesp{},
 	}
-	dc.Clientset, dc.Restconfig, autherr = dc.Client.Authenticate()
+	dc.Clientset, dc.Restconfig, autherr = dc.Client.Authenticate(client.AuthConfig{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = dc.Client.CreateNewNamespace(testingNamespace)
+	nsErr = dc.Client.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = dc.Client.Initialize(dc.Clientset, testingNamespace)
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
+	_, autherr := dc.Clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+	}
 }
 
 func TestDeploy(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -74,7 +93,6 @@ func TestDeploy(t *testing.T) {
 		configMountPath string
 		configMapData   string
 		requiredPorts   []int
-		resourcePath    string
 	}{
 		{
 			containerImage:  "ubuntu:latest",
@@ -83,13 +101,12 @@ func TestDeploy(t *testing.T) {
 			configMountPath: "/scripts/",
 			configMapData:   "echo \"hello world\"",
 			requiredPorts:   []int{8080, 8081},
-			resourcePath:    "/tmp/resources",
 		},
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone)
-		// We won't delete this now so we can use it later.
+		// Test the creation of config maps (2 birds one stone). We won't delete
+		// this now so we can use it later.
 		configmap, err := dc.Client.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
 			t.Error(err.Error())
@@ -102,9 +119,8 @@ func TestDeploy(t *testing.T) {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
 		}
 
-		// Create the deployment
-		// we run the init script created from wherever we've
-		// decided to mount it.
+		// Create the deployment we run the init script created from wherever
+		// we've decided to mount it.
 		err = dc.Client.Deploy(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
 			c.cmdArgs, configmap.ObjectMeta.Name,
@@ -113,8 +129,16 @@ func TestDeploy(t *testing.T) {
 			t.Error(err.Error())
 		}
 
-		// Now the deployment will be waiting for
-		// an attach to copy the binary to boot from.
+		// Now the deployment will be waiting for an attach to copy the binary
+		// to boot from.
+
+		dir, err = ioutil.TempDir("", "deploy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(dir) // clean up
+
+		resourcepath := dir + "/resources"
 
 		// Create empty resource file:
 		resources := &cloud.Resources{
@@ -123,9 +147,9 @@ func TestDeploy(t *testing.T) {
 			PrivateKey:   "",
 			Servers:      make(map[string]*cloud.Server)}
 
-		file, err := os.OpenFile(c.resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		file, err := os.OpenFile(resourcepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
-			t.Error(fmt.Errorf("failed to open resource file %s for writing: %s", c.resourcePath, err))
+			t.Error(fmt.Errorf("failed to open resource file %s for writing: %s", resourcepath, err))
 		}
 
 		encoder := gob.NewEncoder(file)
@@ -135,9 +159,9 @@ func TestDeploy(t *testing.T) {
 		}
 
 		// Generate certs
-		caFile := "/tmp/ca.pem"
-		certFile := "/tmp/cert.pem"
-		keyFile := "/tmp/key.pem"
+		caFile := dir + "/ca.pem"
+		certFile := dir + "/cert.pem"
+		keyFile := dir + "/key.pem"
 		wrDir := "/wr-tmp/.wr_production/"
 		err = internal.GenerateCerts(caFile, certFile, keyFile, "localhost")
 		if err != nil {
@@ -147,7 +171,7 @@ func TestDeploy(t *testing.T) {
 		dc.Opts = &kubedeployment.DeployOpts{
 			Files:         []client.FilePair{{"/tmp/wr", "/wr-tmp/"}, {caFile, wrDir}, {certFile, wrDir}, {keyFile, wrDir}},
 			RequiredPorts: c.requiredPorts,
-			ResourcePath:  c.resourcePath,
+			ResourcePath:  resourcepath,
 			Logger:        log15.New(),
 		}
 
@@ -158,15 +182,18 @@ func TestDeploy(t *testing.T) {
 			dc.Run(stopCh)
 		}()
 
-		// Test if the manager is up.
+		// Don't move this to a new test, the call to connect() waits and keeps
+		// the controller running, this allows time for the manager to be bootstrapped.
 		jq, err := jobqueue.Connect("localhost:8080", caFile, "localhost", []byte{}, 27*time.Second)
 		if err != nil {
 			t.Errorf("Failed to connect to jobqueue: %s", err)
 		}
+		if jq.ServerInfo.Mode != "started" {
+			t.Errorf("Jobqueue not started, current mode : %s", jq.ServerInfo.Mode)
+		} else {
+			t.Logf("jobqueue server mode: %s", jq.ServerInfo.Mode)
+		}
 
-		t.Logf("jobqueue server mode: %s", jq.ServerInfo.Mode)
 		t.Logf("Deployment Controller test passed")
-
 	}
-
 }

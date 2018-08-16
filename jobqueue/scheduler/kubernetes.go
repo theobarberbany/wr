@@ -1,5 +1,6 @@
-// Copyright © 2016-2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -35,20 +36,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
 
-	//	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-// k8s is the implementer of scheduleri.
-// it is a wrapper to implement scheduleri by sending requests to the controller
+// k8s is the implementer of scheduleri. It is a wrapper to implement scheduleri
+// by sending requests to the controller
 
-// maxQueueTime(), reserveTimeout(), hostToID(), busy(), schedule()
-// are inherited from local
+// maxQueueTime(), reserveTimeout(), hostToID(), busy(), schedule() are
+// inherited from local
 type k8s struct {
 	local
-	log15.Logger
 	config          *ConfigKubernetes
 	libclient       *client.Kubernetesp
 	callBackChan    chan string
@@ -60,7 +59,8 @@ type k8s struct {
 	badServerCB     BadServerCallBack
 	es              bool // Does the cluster support ephemeral storage reporting?
 	esmutex         *sync.RWMutex
-	logger          log15.Logger
+	stopCh          chan struct{}
+	log15.Logger
 }
 
 var defaultScriptName = client.DefaultScriptName
@@ -69,23 +69,21 @@ var scriptName string
 
 const kubeSchedulerLog = "kubeSchedulerLog"
 
-// ConfigKubernetes holds the configuration options for the kubernetes
-// WR driver
+// ConfigKubernetes holds the configuration options for the kubernetes wr driver
 type ConfigKubernetes struct {
-	// The image name (Docker Hub) to pull to run WR Runners with.
-	// Defaults to 'ubuntu:latest'
+	// The image name (Docker Hub) to pull to run wr Runners with. Defaults to
+	// 'ubuntu:latest'
 	Image string
 
-	// By default, containers in pods run as root,
-	// to run as a different user, specify here.
+	// By default, containers in pods run as root. To run as a different user,
+	// specify here.
 	User string
 
-	// Requested RAM, a pod will default to 64m, and be
-	// allocated more up to a limit
+	// Requested RAM, a pod will default to 64m, and be allocated more up to a
+	// limit
 	RAM int
 
 	// Requested Disk space, in GB
-	// Currently not implemented: Exploiting node ephemeral storage
 	Disk int
 
 	// PostCreationScript is the []byte content of a script you want executed
@@ -97,18 +95,17 @@ type ConfigKubernetes struct {
 	ConfigMap string
 
 	// ConfigFiles is a comma separated list of paths to config files that
-	// should be copied over to all spawned servers. Absolute paths are copied
-	// over to the same absolute path on the new server. To handle a config file
+	// should be copied over to all spawned pods. To handle a config file
 	// that should remain relative to the home directory (and where the spawned
 	// server may have a different username and thus home directory path
 	// compared to the current server), use the prefix ~/ to signify the home
 	// directory. It silently ignores files that don't exist locally.
 	ConfigFiles string
 
-	// DNSNameServers specifies any additional DNS Nameservers to use
-	// by default kubernetes uses kubedns, and those set at cluster deployment
-	// which will be set by a cluster administrator.
-	// See https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-config
+	// DNSNameServers specifies any additional DNS Nameservers to use by default
+	// kubernetes uses kubedns, and those set at cluster deployment which will
+	// be set by a cluster administrator. See
+	// https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-config
 	// for more details
 	DNSNameServers []string
 
@@ -116,30 +113,29 @@ type ConfigKubernetes struct {
 	Shell string
 
 	// StateUpdateFrequency is the frequency at which to check spawned servers
-	// that are being used to run things, to see if they're still alive.
-	// 0 (default) is treated as 1 minute.
+	// that are being used to run things, to see if they're still alive. 0
+	// (default) is treated as 1 minute.
 	StateUpdateFrequency time.Duration
 
 	// Namespace to initialise clientsets to
 	Namespace string
 
-	// TempMountPath defines the path at which to copy the wr binary to
-	// in the container. It points to an empty volume shared between the
-	// init container and main container and is where copied files are stored.
-	// It should always be the same as what's currently running on the manager
-	// otherwise the cmd passed to runCmd() will be incorrect.
-	// Also defined as $HOME
+	// TempMountPath defines the path at which to copy the wr binary to in the
+	// container. It points to an empty volume shared between the init container
+	// and main container and is where copied files are stored. It should always
+	// be the same as what's currently running on the manager otherwise the cmd
+	// passed to runCmd() will be incorrect. Also defined as $HOME
 	TempMountPath string
 
-	// LocalBinaryPath points to where the wr binary will be accessed to copy
-	// to each pod. It should be generated by the invoking command.
+	// LocalBinaryPath points to where the wr binary will be accessed to copy to
+	// each pod. It should be generated by the invoking command.
 	LocalBinaryPath string
 
 	// Manager Directory to log to
 	ManagerDir string
 
-	// Debug mode sets requested resources at 1/10th the integer value.
-	// useful for testing.
+	// Debug mode sets requested resources at 1/10th the integer value. useful
+	// for testing.
 	Debug bool
 }
 
@@ -153,9 +149,8 @@ func (c *ConfigKubernetes) AddConfigFile(configFile string) {
 	}
 }
 
-// Set up prerequisites, call Run()
-// Create channels to pass requests to the controller.
-// Create queue.
+// Set up prerequisites, call Run() Create channels to pass requests to the
+// controller. Create queue.
 func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.config = config.(*ConfigKubernetes)
 
@@ -168,7 +163,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	l15h.AddHandler(s.Logger, fh)
 
-	s.Logger.Debug(fmt.Sprintf("configuration passed: %#v", s.config))
+	s.Debug("configuration passed", "configuration", s.config)
 
 	// make queue
 	s.queue = queue.New(localPlace)
@@ -193,19 +188,19 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 	s.local.Logger = s.Logger
 
-	// Create the default PostCreationScript if no config map passed.
-	// If the byte stream does not stringify things may go horribly wrong.
+	// Create the default PostCreationScript if no config map passed. If the
+	// byte stream does not stringify things may go horribly wrong.
 	if len(s.config.ConfigMap) == 0 {
 		if string(s.config.PostCreationScript) != "" {
 			cmap, err := s.libclient.CreateInitScriptConfigMap(string(s.config.PostCreationScript))
 			if err != nil {
-				s.Logger.Crit("failed to create configmap from PostCreationScript")
+				s.Crit("failed to create configmap from PostCreationScript")
 				return err
 			}
 			configMapName = cmap.ObjectMeta.Name
 			scriptName = defaultScriptName
 		} else {
-			s.Logger.Crit("a config map or post creation script must be provided.")
+			s.Crit("a config map or post creation script must be provided.")
 		}
 	}
 
@@ -215,22 +210,28 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.reqChan = make(chan *kubescheduler.Request)
 	s.podAliveChan = make(chan *kubescheduler.PodAlive)
 
+	if s.msgCB == nil {
+		s.Warn("No message callback function set")
+	}
+	if s.badServerCB == nil {
+		s.Warn("No bad server callback function set")
+	}
+
 	// Prerequisites to start the controller
 	s.libclient = &client.Kubernetesp{}
-	kubeClient, restConfig, err := s.libclient.Authenticate(s.Logger) // Authenticate against the cluster.
+	kubeClient, restConfig, err := s.libclient.Authenticate(client.AuthConfig{}) // Authenticate against the cluster.
 	if err != nil {
 		return err
 	}
-
 	// Initialise all internal clients on  the provided namespace
 	err = s.libclient.Initialize(kubeClient, s.config.Namespace)
 	if err != nil {
-		s.Logger.Crit(fmt.Sprintf("failed to initialise the internal clients to namespace %s: %s", s.config.Namespace, err))
+		s.Crit("failed to initialise the internal clients to namespace", "namespace", s.config.Namespace, "error", err)
 		panic(err)
 	}
 
-	// Initialise the informer factory
-	// Confine all informers to the provided namespace
+	// Initialise the informer factory Confine all informers to the provided
+	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*15, s.config.Namespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
 		//listopts.Watch = true
@@ -238,7 +239,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Rewrite config files.
 	files := s.rewriteConfigFiles(s.config.ConfigFiles)
-	files = append(files, client.FilePair{s.config.LocalBinaryPath, s.config.TempMountPath})
+	files = append(files, client.FilePair{Src: s.config.LocalBinaryPath, Dest: s.config.TempMountPath})
 
 	// Initialise scheduler opts
 	opts := kubescheduler.ScheduleOpts{
@@ -256,45 +257,33 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Create the controller
 	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, opts)
-	s.Logger.Debug(fmt.Sprintf("Controller contents: %+v", controller))
-	stopCh := make(chan struct{})
+	s.Debug("Controller contents", "contents", controller)
 
-	go kubeInformerFactory.Start(stopCh)
+	s.stopCh = make(chan struct{})
+
+	go kubeInformerFactory.Start(s.stopCh)
 
 	// Start the scheduling controller
-	s.Logger.Info("Starting scheduling controller")
+	s.Debug("Starting scheduling controller")
 	go func() {
-		if err = controller.Run(2, stopCh); err != nil {
-			s.Logger.Error("Error running controller", err.Error())
+		if err = controller.Run(2, s.stopCh); err != nil {
+			s.Error("Error running controller", "error", err.Error())
 		}
 	}()
 
 	return nil
 }
 
-// Send a request to see if a cmd with the provided requirements
-// can ever be scheduled.
-// If the request can be scheduled, errChan returns nil then is closed
-// If it can't ever be sheduled an error is sent on errChan and returned.
-// TODO: OCC if error: What if a node is added shortly after? (Deals with autoscaling?)
+// Send a request to see if a cmd with the provided requirements can ever be
+// scheduled. If the request can be scheduled, errChan returns nil then is
+// closed. If it can't ever be sheduled an error is sent on errChan and returned.
+// TODO: OCC if error: What if a node is added shortly after? (Deals with
+// autoscaling?)
 // https://godoc.org/k8s.io/apimachinery/pkg/util/wait#ExponentialBackoff
 func (s *k8s) reqCheck(req *Requirements) error {
-	s.Logger.Info(fmt.Sprintf("reqCheck called with requirements %#v", req))
+	s.Debug("reqCheck called with requirements", "requirements", req)
 
-	// Rewrite *Requirements to a kubescheduler.Request
-	// Adjust values if debug enabled.
-	var cores *resource.Quantity
-	var ram *resource.Quantity
-	var disk *resource.Quantity
-	if s.config.Debug {
-		cores = resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI)
-		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-		disk = resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI)
-	} else {
-		cores = resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
-		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-		disk = resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
-	}
+	cores, ram, disk := s.generateResourceRequests(req)
 
 	r := &kubescheduler.Request{
 		RAM:    *ram,
@@ -305,24 +294,24 @@ func (s *k8s) reqCheck(req *Requirements) error {
 		CbChan: make(chan kubescheduler.Response),
 	}
 
-	s.Logger.Debug(fmt.Sprintf("Sending request to listener %#v", r))
+	s.Debug("Sending request to listener", "request", r)
 	go func() {
 		s.reqChan <- r
 	}()
 
-	s.Logger.Debug("Waiting on reqCheck to return")
+	s.Debug("Waiting on reqCheck to return")
 	resp := <-r.CbChan
 
 	s.esmutex.Lock()
 	defer s.esmutex.Unlock()
 
 	if resp.Error != nil {
-		s.Logger.Error(fmt.Sprintf("Requirements check recieved error: %s", resp.Error))
+		s.Error("Requirements check recieved error", "error", resp.Error)
 		s.es = resp.Ephemeral
 		return resp.Error
 	}
 
-	s.Logger.Info("reqCheck returned ok")
+	s.Debug("reqCheck returned ok")
 	s.es = resp.Ephemeral
 
 	return resp.Error
@@ -330,7 +319,7 @@ func (s *k8s) reqCheck(req *Requirements) error {
 
 // setMessageCallBack sets the given callback function.
 func (s *k8s) setMessageCallBack(cb MessageCallBack) {
-	s.Logger.Info("setMessageCallBack called")
+	s.Debug("setMessageCallBack called")
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
 	s.msgCB = cb
@@ -338,75 +327,73 @@ func (s *k8s) setMessageCallBack(cb MessageCallBack) {
 
 // setBadServerCallBack sets the given callback function.
 func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
-	s.Logger.Info("setBadServerCallBack called")
+	s.Debug("setBadServerCallBack called")
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
 	s.badServerCB = cb
 }
 
-// The controller is passed a callback channel.
-// notifyMessage recieves on the channel
-// if anything is recieved call s.msgCB(msg).
+// The controller is passed a callback channel. notifyMessage recieves on the
+// channel. If anything is recieved call s.msgCB(msg).
 func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *cloud.Server) {
-	s.Logger.Debug("notifyCallBack handler started")
+	s.Debug("notifyCallBack handler started")
 	for {
 		select {
 		case msg := <-callBackChan:
-			s.Logger.Debug("Callback notification", "msg", msg)
+			s.Debug("Callback notification", "msg", msg)
 			if s.msgCB != nil {
 				go s.msgCB(msg)
-			} else {
-				s.logger.Error("No message callback function defined")
 			}
 		case badServer := <-badCallBackChan:
-			s.Logger.Debug("Bad server callback notification", "msg", badServer)
+			s.Debug("Bad server callback notification", "msg", badServer)
 			if s.badServerCB != nil {
 				go s.badServerCB(badServer)
-			} else {
-				s.logger.Error("No bad server callback function defined")
 			}
 		}
 	}
 
 }
 
-// Delete the namespace when all pods have exited.
 func (s *k8s) cleanup() {
-	s.Logger.Debug("cleanup() Called")
+	s.Debug("cleanup() Called")
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// Stop the job queue
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
-
-	return
+	// Stop the scheduler controller
+	close(s.stopCh)
 }
 
-// Work out how many pods with given resource requests can be scheduled based on resource requests on the
-// nodes in the cluster.
+// This should work out how many pods with given resource requests can be
+// scheduled based on resource requests on the nodes in the cluster. However at
+// the time of writing this was overly complicated, and started to replicate
+// code from the controller manager and kubelet. I'm returning yes in blocks of
+// 100. ToDO: If any job is pending with the given requirements, return 0 until
+// that pend fails. This should reduce overall load on the cluster when adding
+// lots of jobs at once.
 func (s *k8s) canCount(req *Requirements) (canCount int) {
-	s.Logger.Debug("canCount Called, returning 100")
+	s.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100
 }
 
-// RunFunc calls spawn() and exits with an error = nil when pod has terminated. (Runner exited)
-// Or an error if there was a problem. Use deletefunc in controller to send message?
-// (based on some sort of channel communication?)
+// RunFunc calls spawn() and exits with an error = nil when pod has terminated
+// (Runner exited). Or an error if there was a problem.
 func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
-	s.Logger.Debug(fmt.Sprintf("RunCmd Called with cmd %s and requirements %#v", cmd, req))
-	// The first 'argument' to cmd will be the absolute path to the manager's executable.
-	// Work out the local binary's name from localBinaryPath.
-	//binaryName := filepath.Base(s.config.localBinaryPath)
+	s.Debug("RunCmd Called", "cmd", cmd, "requirements", req)
+	// The first 'argument' to cmd will be the absolute path to the manager's
+	// executable. Work out the local binary's name from localBinaryPath.
 
 	configMountPath := "/scripts"
 
-	// If there is an overwridden cloud_script, create a configmap and pass that instead.
-	// If there was a ConfigMap passed
+	// If there is an overwridden cloud_script, create a configmap and pass that
+	// instead. If there was a ConfigMap passed
 	if val, defined := req.Other["cloud_script"]; defined {
 		cmap, err := s.libclient.CreateInitScriptConfigMap(val)
 		if err != nil {
@@ -423,58 +410,28 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	var containerImage string
 	if val, defined := req.Other["cloud_os"]; defined {
 		containerImage = val
-		s.Logger.Debug(fmt.Sprintf("setting container image to %s", containerImage))
+		s.Debug("setting container image", "container image", containerImage)
 	} else {
 		containerImage = s.config.Image
 	}
 
-	// Remove any single quotes as this causes
-	// issues passing information to the runner
+	// Remove any single quotes as this causes issues passing information to the
+	// runner
 	cmd = strings.Replace(cmd, "'", "", -1)
 	binaryArgs := []string{cmd}
 
-	// build ResourceRequirements for Spawn()
-	// Adjust values if debug enabled.
-	var resources apiv1.ResourceRequirements
-	if s.config.Debug {
-		resources = apiv1.ResourceRequirements{
-			Requests: apiv1.ResourceList{
-				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI),
-				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
-				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI),
-			},
-			Limits: apiv1.ResourceList{
-				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*100, resource.DecimalSI),
-				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
-			},
-		}
+	resources := s.generateResourceRequirements(req)
 
-	} else {
-		resources = apiv1.ResourceRequirements{
-			Requests: apiv1.ResourceList{
-				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI),
-				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
-				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI),
-			},
-			Limits: apiv1.ResourceList{
-				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*1000, resource.DecimalSI),
-				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
-			},
-		}
-	}
-
-	// If ephemeral storage is not enabled on the cluster
-	// don't request any
+	// If ephemeral storage is not enabled on the cluster don't request any
 	s.esmutex.RLock()
 	if !s.es {
 		resources.Requests[apiv1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(0)*1024*1024*1024, resource.BinarySI)
 	}
 	s.esmutex.RUnlock()
 
-	//DEBUG:
-	//binaryArgs = []string{"tail", "-f", "/dev/null"}
+	//DEBUG: binaryArgs = []string{"tail", "-f", "/dev/null"}
 
-	s.Logger.Debug(fmt.Sprintf("Spawning pod with requirements %#v", resources))
+	s.Debug("Spawning pod with requirements", "requirements", resources)
 	pod, err := s.libclient.Spawn(containerImage,
 		s.config.TempMountPath,
 		configMountPath+"/"+scriptName,
@@ -484,22 +441,22 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		resources)
 
 	if err != nil {
-		s.Logger.Error("error spawning runner pod", "err", err)
+		s.Error("error spawning runner pod", "err", err)
 		s.msgCB(fmt.Sprintf("unable to spawn a runner with requirements %s: %s", req.Stringify(), err))
 		reservedCh <- false
 		return err
 	}
 
 	reservedCh <- true
-	s.Logger.Debug(fmt.Sprintf("Spawn request succeded, pod %s", pod.ObjectMeta.Name))
+	s.Debug("Spawn request succeded", "pod", pod.ObjectMeta.Name)
 
-	// We need to know when the pod we've created (the runner) terminates
-	// there is a listener in the controller that will notify when a pod passed
-	// to it as a request containing a name and channel is deleted. The notification
-	// is the channel being closed.
+	// We need to know when the pod we've created (the runner) terminates. There
+	// is a listener in the controller that will notify when a pod passed to it
+	// terminates. This is done as a request containing the pod and an error
+	// channel. The notification is the channel returning an error (or nil).
 
 	// Send the request to the listener.
-	s.Logger.Debug(fmt.Sprintf("Sending request to the podAliveChan with pod %s", pod.ObjectMeta.Name))
+	s.Debug("Sending request to the podAliveChan", "pod", pod.ObjectMeta.Name)
 	errChan := make(chan error)
 	go func() {
 		req := &kubescheduler.PodAlive{
@@ -510,35 +467,33 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		s.podAliveChan <- req
 	}()
 
-	// Wait for the response, if there is an error
-	// e.g CrashBackLoopoff suggesting the post create
-	// script is throwing an error, return it here.
-	// Don't delete the pod if some error is thrown.
-	s.Logger.Debug(fmt.Sprintf("Waiting on status of pod %s", pod.ObjectMeta.Name))
+	// Wait for the response, if there is an error (e.g CrashBackLoopoff)
+	// suggesting the post create script is throwing an error, return it here.
+	// Don't delete the pod if some error is thrown and debug is enabled.
+	s.Debug("Waiting on status of pod", "pod", pod.ObjectMeta.Name)
 	err = <-errChan
 	if err != nil {
-		s.Logger.Error(fmt.Sprintf("error with pod: %s", pod.ObjectMeta.Name), "err", err)
-		return err
+		s.Error("error with pod", "pod", pod.ObjectMeta.Name, "err", err)
+		if s.config.Debug {
+			return err
+		}
 	}
 	// Delete terminated pod if no error thrown.
-	s.Logger.Debug(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
+	s.Debug("Deleting pod", "pod", pod.ObjectMeta.Name)
 	err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
-	s.Logger.Debug("Returning at end of runCmd()")
+	s.Debug("Returning at end of runCmd()")
 
 	return err
 }
 
-// This is ugly, I'm sorry.
-// * Run on the manager, inside the cluster *
-// Rewrite any relative path to replace '~/' with TempMountPath
-// returning []client.FilePair to be copied to the runner.
-// currently only relative paths are allowed, any path not
-// starting '~/' is dropped as everything ultimately needs
-// to go into TempMountPath as that's the volume that gets
-// preserved across containers.
+//  * Run on the manager, inside the cluster * This is ugly, I'm sorry.
+//  Rewrite any relative path to replace '~/' with TempMountPath returning
+//  []client.FilePair to be copied to the runner. currently only relative paths
+//  are allowed, any path not starting '~/' is dropped as everything ultimately
+//  needs to go into TempMountPath as that's the volume that gets preserved
+//  across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
-	// Get current user's home directory
-	// os.user.Current() was failing in a pod.
+	// Get current user's home directory os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?
 	hDir := os.Getenv("HOME")
 	filePairs := []client.FilePair{}
@@ -549,12 +504,11 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get a slice of paths.
 	split := strings.Split(configFiles, ",")
 
-	// Loop over all local paths in split, if any don't exist
-	// silently remove them. If a path is of the form src:dest
-	// stat the src, if it exists add the pair to a new set to be
-	// processed separately.
-	// It probably makes more sense to create the []FilePair here, and just
-	// process all FilePair.Dests in one step at the end.
+	// Loop over all local paths in split, if any don't exist silently remove
+	// them. If a path is of the form src:dest stat the src, if it exists add
+	// the pair to a new set to be processed separately. It probably makes more
+	// sense to create the []FilePair here, and just process all FilePair.Dests
+	// in one step at the end.
 	for _, path := range split {
 		localPath := internal.TildaToHome(path)
 		_, err := os.Stat(localPath)
@@ -563,23 +517,22 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 			srcDest := strings.Split(path, ":")
 			// If there is no : separator, drop the path
 			if len(srcDest) == 1 {
-				s.Logger.Warn(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
+				s.Warn("Dropping path", "path", localPath, "error", err)
 				continue
 			}
 			if len(srcDest) == 2 {
-				// the client.token is not generated when this runs, so
-				// if the file is client.token, ignore the fact it does not exist
+				// the client.token is not generated when this runs, so if the
+				// file is client.token, ignore the fact it does not exist
 				if filepath.Base(srcDest[0]) == "client.token" {
-					s.Logger.Info(fmt.Sprintf("Assuming %s, is the client.token. Adding.", path))
+					s.Debug("Adding client token", "path", path)
 					pairSrc = append(pairSrc, srcDest[0])
 					pairDst = append(pairDst, srcDest[1])
+					continue
 				} else {
 					// Check the src exists.
 					_, errr := os.Stat(srcDest[0])
 					if errr != nil {
-						// the client.token is not generated when this runs, so
-						// if the file is client.token, ignore the fact it does not
-						s.Logger.Warn(fmt.Sprintf("Dropping path %s, with error %s", path, errr))
+						s.Warn("Dropping path", "path", path, "error", errr)
 						continue
 					}
 
@@ -589,65 +542,60 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 					continue
 				}
 			}
-			s.Logger.Error(fmt.Sprintf("Source destination pair %s is malformed.", path))
+			s.Error("Source destination pair malformed", "pair", path)
 
 		} else {
 			paths = append(paths, path)
 		}
 	}
 
-	// create []client.FilePair to pass in to the
-	// deploy options. Replace '~/' with the current
-	// user's $HOME. This is because $HOME on the manager
-	// will match $HOME on the spawned runner.
+	// create []client.FilePair to pass in to the deploy options. Replace '~/'
+	// with the current user's $HOME. This is because $HOME on the manager will
+	// match $HOME on the spawned runner.
 
 	// Process single paths
 	dests := s.rewriteDests(paths)
 
-	// For all paths which the src check has passed
-	// create the dest path by rewriting ~/ to hDir.
+	// For all paths which the src check has passed create the dest path by
+	// rewriting ~/ to hDir.
 	for i, path := range paths {
 		if strings.HasPrefix(path, "~/") {
 			// rewrite ~/ to hDir
 			st := strings.TrimPrefix(path, "~/")
 			st = hDir + st
 
-			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: st, Dest: dests[i]})
 		} else {
 			// The source must exist, so tar won't fail. Add it anyway.
-			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: path, Dest: dests[i]})
 		}
 	}
 
 	// Process src:dest pairs
 	dests = s.rewriteDests(pairDst)
 
-	// For all paths which the src check has passed
-	// create the dest path by rewriting ~/ to hDir.
+	// For all paths which the src check has passed create the dest path by
+	// rewriting ~/ to hDir.
 	for i, path := range pairSrc {
 		if strings.HasPrefix(path, "~/") {
 			// rewrite ~/ to hDir
 			st := strings.TrimPrefix(path, "~/")
 			st = hDir + st
 
-			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: st, Dest: dests[i]})
 		} else {
 			// The source must exist, so tar won't fail. Add it anyway.
-			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: path, Dest: dests[i]})
 		}
 	}
-
 	return filePairs
 
 }
 
-// remove the '~/' prefix as tar will
-// create a ~/.. file. We don't want this as the files will
-// be lost in the initcontainers filesystem.
-// replace '~/' with TempMountPath which we define
-// as $HOME in the created pods.
-// Remove the file name, just returning the
-// directory it is in.
+// remove the '~/' prefix as tar will create a ~/.. file. We don't want this as
+// the files will be lost in the initcontainers filesystem. Replace '~/' with
+// TempMountPath which we define as $HOME in the created pods. Remove the file
+// name, just returning the directory it is in.
 func (s *k8s) rewriteDests(paths []string) []string {
 	dests := []string{}
 	for _, path := range paths {
@@ -655,30 +603,73 @@ func (s *k8s) rewriteDests(paths []string) []string {
 			// Return the file path relative to '~/'
 			rel, err := filepath.Rel("~/", path)
 			if err != nil {
-				s.Logger.Error(fmt.Sprintf("Could not convert path %s to relative path.", path))
+				s.Error("Could not convert path to relative path.", "path", path)
 			}
 			dir := filepath.Dir(rel)
-			// Trim prefix
-			// dir = strings.TrimPrefix(dir, "~")
-			// Add podBinDir as new prefix
+			// Trim prefix dir = strings.TrimPrefix(dir, "~") Add podBinDir as
+			// new prefix
 			dir = s.config.TempMountPath + dir + "/"
 			dests = append(dests, dir)
 		} else {
-			s.Logger.Warn(fmt.Sprintf("File with destination path %s may be lost as it does not have prefix '~/'", path))
+			s.Warn("File may be lost as it does not have prefix '~/'", "file", path)
 			dests = append(dests, path)
 		}
 	}
 	return dests
 }
 
-// Tell the embedded local scheduler that we've got unlimited
-// resources. Let the k8s scheduler handle everything else.
-// ~~ It may be worth expanding this to set maximums to the total
-// node capacity at some point. ~~
+// Tell the embedded local scheduler that we've got unlimited resources. Let the
+// k8s scheduler handle everything else. ~~ It may be worth expanding this to
+// set maximums to the total node capacity at some point. ~~
 func (s *k8s) maxMem() int {
 	return 0
 }
 
 func (s *k8s) maxCPU() int {
 	return 0
+}
+
+// Rewrite *Requirements to a kubeschedule.Request. Scale down values if debug
+// enabled.
+func (s *k8s) generateResourceRequests(req *Requirements) (*resource.Quantity, *resource.Quantity, *resource.Quantity) {
+	var coreMult int64
+	var diskMult int64
+
+	coreMult = 1000
+	diskMult = 1024
+
+	if s.config.Debug {
+		coreMult = 100
+		diskMult = 1
+	}
+
+	cores := resource.NewMilliQuantity(int64(req.Cores)*coreMult, resource.DecimalSI)
+	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
+	disk := resource.NewQuantity(int64(req.Disk)*1024*1024*diskMult, resource.BinarySI)
+
+	return cores, ram, disk
+}
+
+// Build ResourceRequirements for Spawn() Adjust values if debug enabled.
+func (s *k8s) generateResourceRequirements(req *Requirements) apiv1.ResourceRequirements {
+	coreMult := int64(1000)
+
+	if s.config.Debug {
+		coreMult = 100
+	}
+
+	cores, ram, disk := s.generateResourceRequests(req)
+
+	resources := apiv1.ResourceRequirements{
+		Requests: apiv1.ResourceList{
+			apiv1.ResourceCPU:              *cores,
+			apiv1.ResourceMemory:           *ram,
+			apiv1.ResourceEphemeralStorage: *disk,
+		},
+		Limits: apiv1.ResourceList{
+			apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*coreMult, resource.DecimalSI),
+			apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
+		},
+	}
+	return resources
 }

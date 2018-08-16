@@ -22,17 +22,9 @@ env:
     - DEP_VERSION="0.5.0"
 
 before_install:
-  # - go get github.com/modocache/gover
-  # - go get github.com/mattn/goveralls
-  # - go get github.com/Masterminds/glide
-  # - $HOME/gopath/bin/glide -q install
-  # # wr consists of multiple Go packages, which refer to each other by
-  # # their absolute GitHub path, e.g. github.com/VertebrateResequencing/wr/kubernetes/client.
-  # # That means, by default, if someone forks the repo and makes changes across
-  # # multiple packages within wr, Travis won't pass for the branch on their
-  # # own repo. To fix that, we move the directory
-  # - mkdir -p $TRAVIS_BUILD_DIR $GOPATH/src/github.com/VertebrateResequencing
-  # - test ! -d $GOPATH/src/github.com/VertebrateResequencing/wr && mv $TRAVIS_BUILD_DIR $GOPATH/src/github.com/VertebrateResequencing/wr || true
+  - go get github.com/modocache/gover
+  - go get github.com/mattn/goveralls
+
   # Download the binary to bin folder in $GOPATH
   - curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
   # Make the binary executable
@@ -79,8 +71,6 @@ jobs:
         - JSONPATH='{range .items[*]}{@.metadata.name}:{range @.status.conditions[*]}{@.type}={@.status};{end}{end}'; until kubectl -n kube-system get pods -lk8s-app=kube-dns -o jsonpath="$JSONPATH" 2>&1 | grep -q "Ready=True"; do sleep 1;echo "waiting for kube-dns to be available"; kubectl get pods --all-namespaces; done
           # Install nsenter so port forwarding works
         - git clone https://github.com/jetstack/ubuntu-nsenter && docker build -t ubuntu-nsenter ubuntu-nsenter/. && docker run -v /usr/local/bin:/hostbin ubuntu-nsenter cp /nsenter /hostbin/nsenter
-        # Build the binary to use
-        - make compile_k8s_tmp
 
     - stage: e2e Tests
       script: make test-e2e
@@ -103,5 +93,3 @@ jobs:
         - JSONPATH='{range .items[*]}{@.metadata.name}:{range @.status.conditions[*]}{@.type}={@.status};{end}{end}'; until kubectl -n kube-system get pods -lk8s-app=kube-dns -o jsonpath="$JSONPATH" 2>&1 | grep -q "Ready=True"; do sleep 1;echo "waiting for kube-dns to be available"; kubectl get pods --all-namespaces; done
           # Install nsenter so port forwarding works
         - git clone https://github.com/jetstack/ubuntu-nsenter && docker build -t ubuntu-nsenter ubuntu-nsenter/. && docker run -v /usr/local/bin:/hostbin ubuntu-nsenter cp /nsenter /hostbin/nsenter
-        # Build the binary to use
-        - make compile_k8s_tmp

@@ -1,4 +1,4 @@
-PKG := github.com/theobarberbany/wr
+PKG := github.com/VertebrateResequencing/wr
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
@@ -38,11 +38,10 @@ test: export CGO_ENABLED = 0
 test:
 	@go test -p 1 -tags netgo -timeout 20m --count 1 ${PKG_LIST}
 
-test-e2e: ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
+test-e2e: compile_k8s_tmp ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
 	./kubernetes/run-e2e.sh
 
-
-test-k8s-unit: ## Run the unit and integration tests for the kubernetes driver
+test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kubernetes driver
 	./kubernetes/run-unit.sh
 
 race: export CGO_ENABLED = 1
@@ -65,9 +64,9 @@ clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
 	@rm -fr ./vendor
+	@rm -f /tmp/wr
 
 dist: export CGO_ENABLED = 0
-
 # go get -u github.com/gobuild/gopack
 # go get -u github.com/aktau/github-release
 dist:
@@ -78,4 +77,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e
+.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e test-k8s-unit

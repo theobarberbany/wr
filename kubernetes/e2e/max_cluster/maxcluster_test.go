@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limite
+// Copyright © 2018 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -33,17 +33,16 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/inconshreveable/log15"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 )
 
-// Assumes that there is a wr deployment in existence
-// in development mode. It then pulls the namespace from the
-// resource file and runs the tests against the cluster there.
+// Assumes that there is a wr deployment in existence in development mode. It
+// then pulls the namespace from the resource file and runs the tests against
+// the cluster there.
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
@@ -52,14 +51,23 @@ var config internal.Config
 var logger log15.Logger
 var token []byte
 var jq *jobqueue.Client
+var skip bool
 
 func init() {
 	logger = log15.New()
 
 	tc = client.Kubernetesp{}
-	clientset, _, autherr = tc.Authenticate()
+	clientset, _, autherr = tc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := clientset.CoreV1().Endpoints("default").List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for default namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+		return
 	}
 
 	config = internal.ConfigLoad(internal.Development, false, logger)
@@ -68,7 +76,9 @@ func init() {
 
 	file, err := os.Open(resourcePath)
 	if err != nil {
-		panic(err)
+		fmt.Printf("No resource file found at %s, skipping tests.", resourcePath)
+		skip = true
+		return
 	}
 
 	decoder := gob.NewDecoder(file)
@@ -84,16 +94,21 @@ func init() {
 
 	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile, config.ManagerCertDomain, token, 15*time.Second)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to connect to jobqueue, skipping.")
+		skip = true
+		return
 	}
 
 	autherr = tc.Initialize(clientset, resources.Details["namespace"])
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 }
-
 func TestClusterPend(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		repgrp string
 	}{
@@ -102,8 +117,8 @@ func TestClusterPend(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var jobs []*jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -117,6 +132,18 @@ func TestClusterPend(t *testing.T) {
 			if jobs == nil {
 				return false, nil
 			} else {
+				// If there arent
+				nodeList, err := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
+				if err != nil {
+					t.Errorf("Failed to list nodes: %s", err)
+				}
+
+				// There should always be 2 * nodes jobs If not wait until
+				// they're all in the list
+				if len(jobs) != 2*len(nodeList.Items) {
+					return false, nil
+				}
+
 				// For each job, ensure it runs & exits succesfully.
 				for _, job := range jobs {
 					if job.Exited && job.Exitcode != 1 {
@@ -136,9 +163,12 @@ func TestClusterPend(t *testing.T) {
 			t.Errorf("wait on jobs in rep group %s  failed: %s", c.repgrp, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion.
-		// They are kept if they error.
+		// Now check the pods are deleted after succesful completion. They are
+		// kept if they error.
 		for _, job := range jobs {
+			if len(job.Host) == 0 {
+				t.Errorf("job %+v has no host.", job)
+			}
 			_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 			if err != nil && errors.IsNotFound(err) {
 				t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
